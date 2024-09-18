@@ -1,19 +1,25 @@
+import logging
+import asyncio
 import os
+import re
 import uuid
-import logging
-import asyncio
 import aiohttp
-from instagrapi import Client
-import asyncio
-import logging
-from telegram import __version__ as TG_VER
+import requests
+from telegram import ForceReply, Update
 from telegram.ext import *
-from telegram import *
-from telegram.ext import ApplicationBuilder, CommandHandler
+from instagrapi import Client
 
-tokens = "xxxxxxxx"
+logging.basicConfig(
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
+)
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logger = logging.getLogger(__name__)
+
+tokens = "xxxxxxxxxxxx"
+
 INSTAGRAM_USERNAME = "abc@gmail.com"
-INSTAGRAM_PASSWORD = "abcd"
+INSTAGRAM_PASSWORD = "abc"
+
 RETRY_LIMIT = 3
 RETRY_DELAY = 10
 
@@ -28,28 +34,41 @@ logger = logging.getLogger(__name__)
 async def login_instagram():
     instagrapi_client.login(INSTAGRAM_USERNAME, INSTAGRAM_PASSWORD)
 
+def extract_cdn_url(response_text):
+        pattern = r'https://cdn\.downloadgram\.org/[^"\\]+'
+        match = re.search(pattern, response_text)
+        if match:
+            return match.group(0)
+        else:
+            return None
+
 async def get_video_url(link):
-    api_url = f"https://api.silohost.ir/api/api.php?link={link}"
-    async with aiohttp.ClientSession() as session:
-        async with session.get(api_url) as response:
-            if response.status == 200:
-                data = await response.json()
-                if data.get('status') == True and data['data'].get('status') == "redirect":
-                    return data['data'].get('url')
-    return None
+    url = "https://api.downloadgram.org/media"
+    headers = {
+        "accept": "*/*",
+        "content-type": "application/x-www-form-urlencoded",
+        "origin": "https://downloadgram.org",
+        "referer": "https://downloadgram.org/",
+        "user-agent": "Mozilla/5.0 (Linux; Android 6.0; Nexus 5 Build/MRA58N) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Mobile Safari/537.36"
+    }
+    data = {
+        "url": f"{link}"
+    }
+    response = requests.post(url, headers=headers, data=data)
+    url = extract_cdn_url(response.text)
+    if url:
+        return url
+    else:
+        return None
 
 async def download_video(video_url):
     file_name = f"video_{uuid.uuid4().hex}.mp4"
-    chunk_size = 1024 * 500
-    async with aiohttp.ClientSession() as session:
-        async with session.get(video_url) as response:
-            with open(file_name, 'wb') as f:
-                while True:
-                    chunk = await response.content.read(chunk_size)
-                    if not chunk:
-                        break
-                    f.write(chunk)
-    return file_name
+    response = requests.get(video_url, stream=True)
+    if response.status_code == 200:
+        with open(file_name, 'wb') as file:
+                for chunk in response.iter_content(chunk_size=8192):
+                    file.write(chunk)
+                return file_name
 
 async def upload_video(video_path, caption=""):
     retries = 0
@@ -66,7 +85,7 @@ async def upload_video(video_path, caption=""):
             await asyncio.sleep(RETRY_DELAY)
     return False
 
-# Telegram command handler to handle Instagram URL
+
 async def handle_instagram_url(update: Update, context: CallbackContext):
     message = update.message.text
     if "instagram.com" not in message:
@@ -81,12 +100,13 @@ async def handle_instagram_url(update: Update, context: CallbackContext):
         return
 
     # Download video
+
     video_path = await download_video(video_url)
     await update.message.reply_text(f"Video downloaded successfully: {video_path}")
 
     # Upload to Instagram
     await login_instagram()
-    craption = """"Read More 👇
+    craption = """Read More 👇
 
 ***** All Airdrop Links in Bio *****
 
@@ -127,25 +147,27 @@ Performance and Variants
 • Range: ~500 miles
 • Towing Capacity: 14,000 pounds
 
-#viral #caption #trend #instagram"""
+#viral #caption #trend #instagram """
     success = await upload_video(video_path, craption)
     
     if success:
         await update.message.reply_text("Reel uploaded to Instagram successfully!")
         if os.path.exists(video_path):
             await asyncio.to_thread(os.remove, video_path)
+            await asyncio.to_thread(os.remove, f"{video_path}.jpg")
             await update.message.reply_text("Video file deleted from the system.")
     else:
         await update.message.reply_text("Failed to upload reel after multiple attempts.")
 
+# Start command handler
 async def start(update: Update, context: CallbackContext):
     await update.message.reply_text("Send me an Instagram reel URL and I'll handle the rest!")
 
-async def main():
-    application = ApplicationBuilder().token(f"{tokens}").build()
+def main() -> None:
+    application = Application.builder().token(f"{tokens}").build()
     application.add_handler(CommandHandler("start", start))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_instagram_url))
-    application.run_polling()
+    application.run_polling(allowed_updates=Update.ALL_TYPES)
 
-if __name__ == '__main__':
-    asyncio.run(main())
+if __name__ == "__main__":
+    main()
